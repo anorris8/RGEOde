@@ -1,0 +1,612 @@
+---
+title: "RGEOde: Differential expression analysis of GEO/SRA RNA-Seq data (pre-processed by Recount2)"
+subtitle: "Example (Experiment GSE58135/SRP042620)"
+author: "Student name goes here"
+date: '`r Sys.Date()`'
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    theme: journal
+    df_print: paged
+    code_folding: hide
+  pdf_document:
+    toc: yes
+    toc_depth: "1"
+    number_sections: yes
+    geometry: margin=0.75in
+    fontsize: 12pt
+    classoption: portrait
+editor_options: 
+  chunk_output_type: console
+---
+
+# About  
+
+This analysis will determine the top genes differentially expressed in breast cancer subtypes using RNA-Seq gene expression data from GEO. Many other possible comparisons are possible (see **Study sample information (phenoData)** for information known about the samples in this dataset). The data was pre-processed (alignment and expression calculation) using (recount2)[https://jhubiostatistics.shinyapps.io/recount/].  
+
+## Example dataset (GSE58135/SRP042620)  
+*Abbreviated from (NCBI GEO)[https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE58135]*   
+More information about breast cancer is available (here)[https://www.ncbi.nlm.nih.gov/pubmedhealth/PMH0032825/]
+
+### Study title: Expression profiling by high throughput sequencing      
+
+### Study sample information (phenoData)    
+  * Samples: 126 breast cancer (tumor) biopsies + 56 normal breast tissues + 28 breast cancer cell lines      
+  * Tumor markers: ER+ = 42; ER- = 42; Triple Negative (ER-/PR-/HER2-) = 42    
+
+## Publication of original analysis  
+[Varley, et al. Recurrent read-through fusion transcripts in breast cancer. Breast Cancer Res Treat. 2014)[https://www.ncbi.nlm.nih.gov/pubmed/] (It has been (cited 26 times)[https://www.ncbi.nlm.nih.gov/pubmed?linkname=pubmed_pubmed_citedin&from_uid=24929677])
+
+**Abstract:**   
+ RNA-seq was performed on breast cancer cell lines and primary tumors Overall design: RNA-seq was performed on 28 breast cancer cell lines, 42 Triple Negative Breast Cancer (TNBC) primary tumors, and 42 Estrogen Receptor Positive (ER+) and HER2 Negative Breast Cancer primary tumors, 30 uninovlved breast tissue samples that were adjacent to ER+ primary tumors, 5 breast tissue samples from reduction mammoplasty procedures performed on patients with no known cancer, and 21 uninvolved breast tissue samples that were adjacent to TNBC primary tumors.
+
+# Data types (Some jargon)    
+**exprsData** = expression data (here, expression counts for genes)  
+**phenoData** = sample information ("phenotype") data (e.g. Sample Name, Age, Case/Control...)  
+**featureData** = feature information (here, the "features" are the ENSEMBL identifiers for genes)      
+
+# About Recount2  
+
+The analysis incorporates R code directly from `recount2` [vignette](http://bioconductor.org/packages/devel/bioc/vignettes/recount/inst/doc/recount-quickstart.html#2_quick_start_to_using_to_recount)  
+
+## Abstract:  
+Explore and download data from the recount project available at https://jhubiostatistics.shinyapps.io/recount/. Using the recount package you can download RangedSummarizedExperiment objects at the gene, exon or exon-exon junctions level, the raw counts, the phenotype metadata used, the urls to the sample coverage bigWig files or the mean coverage bigWig file for a particular study. The RangedSummarizedExperiment objects can be used by different packages for performing differential expression analysis. Using http://bioconductor.org/packages/derfinder you can perform annotation-agnostic differential expression analyses with the data from the recount project as described at http://www.nature.com/nbt/journal/v35/n4/full/nbt.3838.html.  
+
+## Authors:  
+Leonardo Collado-Torres, Abhinav Nellore,Andrew E. Jaffe, Margaret A. Taub, Kai Kammers, Shannon E. Ellis, Kasper Daniel Hansen, Ben Langmead, Jeffrey T. Leek
+
+## Maintainer:   
+Leonardo Collado-Torres <lcollado at jhu.edu>  
+
+# Setup
+
+## Install R packages  
+*If they are not already downloaded.*  
+```{r setup_pkgs_install, eval=FALSE}
+### R packages at CRAN
+install.packages(c("ggplot2", "knitr", "devtools", "plotly"))
+
+### R packages at Bioconductor
+source("http://bioconductor.org/biocLite.R")
+BiocInstaller::biocLite(c("DESeq2", "edgeR", "recount", "DEFormats"))
+```
+
+## Load R packages  
+*These packages provide us with the functions we will use in our analysis.*   
+```{r setup_pkgs_load}
+library(devtools)
+library(edgeR)
+library(ggplot2)
+library(knitr)
+library(limma)
+library(recount)
+library(DEFormats)
+
+### Browse the vignettes for a quick description of how to use the package
+#browseVignettes("recount")
+```
+
+## RMarkdown report options
+```{r setup_opts}
+### Do not print R code in report
+opts_chunk$set(echo = FALSE, comment=NA)
+
+### Do not print warnings and messages in report
+opts_chunk$set(warning = FALSE, message = FALSE)
+
+### Keep track of RMarkdown analysis progress
+opts_knit$set(progress = TRUE, verbose = TRUE)
+```
+
+## Load custom pca plotting function 
+```{r setup_fxn}
+### PCA plotting function (for prcomp) modified from:
+### ggbiplot R package (download from GitHub website using devtools)
+#install.packages("devtools")
+#library("devtools")
+#install_github("vqv/ggbiplot")
+
+pcaplot <- function (pcobj, choices = 1:2, scale = 1, 
+    obs.scale = 1 - scale, var.scale = scale, circle.prob = 0.68,
+    groups = NULL, ellipse = TRUE, ellipse.prob = 0.68, 
+    labels = NULL, labels.size = 3, alpha = 1, 
+    var.axes = FALSE, var.color = "darkblue", 
+    varname.size = 3, varname.adjust = 1.5, varname.abbrev = FALSE, ...) 
+{
+  library(ggplot2)
+  library(plyr)
+  library(scales)
+  library(grid)
+  stopifnot(length(choices) == 2)
+    
+  nobs.factor <- sqrt(nrow(pcobj$x) - 1)
+  d <- pcobj$sdev
+  u <- sweep(pcobj$x, 2, 1/(d * nobs.factor), FUN = "*")
+  v <- pcobj$rotation
+
+  choices <- pmin(choices, ncol(u))
+  df.u <- as.data.frame(sweep(u[, choices], 2, d[choices]^obs.scale, FUN = "*"))
+  v <- sweep(v, 2, d^var.scale, FUN = "*")
+  df.v <- as.data.frame(v[, choices])
+  names(df.u) <- c("xvar", "yvar")
+  names(df.v) <- names(df.u)
+  
+  df.u <- df.u * nobs.factor
+  r <- sqrt(qchisq(circle.prob, df = 2)) * prod(colMeans(df.u^2))^(1/4)
+  v.scale <- rowSums(v^2)
+  df.v <- r * df.v/sqrt(max(v.scale))
+  
+  if (obs.scale == 0) u.axis.labs <- paste("PC", choices, sep = "")
+  else u.axis.labs <- paste("PC", choices, sep = "")
+  
+  u.axis.labs <- paste(
+    u.axis.labs, 
+    sprintf("(%0.1f%% variance)", 100 * pcobj$sdev[choices]^2/sum(pcobj$sdev^2)))
+  if (!is.null(labels)) df.u$labels <- labels
+  if (!is.null(groups)) df.u$groups <- groups
+  
+  if (varname.abbrev) df.v$varname <- abbreviate(rownames(v))
+  else df.v$varname <- rownames(v)
+  df.v$angle <- with(df.v, (180/pi) * atan(yvar/xvar))
+  df.v$hjust <- with(df.v, (1 - varname.adjust * sign(xvar))/2)
+  
+  g <- ggplot(data = df.u, aes(x = xvar, y = yvar)) + 
+    labs(x = u.axis.labs[1], y = u.axis.labs[2]) + 
+    theme_bw()
+  
+  if (var.axes) {
+    g <- g + geom_segment(
+      data = df.v, 
+      aes(x = 0, y = 0, xend = xvar, yend = yvar),
+      arrow = arrow(length = unit(1/2, "picas")), 
+      color = muted(var.color))
+  }
+  
+  if (!is.null(df.u$labels)) {
+    if (!is.null(df.u$groups)) g <- g + geom_text(aes(label = labels, color = groups), size = labels.size)
+    else g <- g + geom_text(aes(label = labels), size = labels.size)
+  } else {
+    
+    if (!is.null(df.u$groups)) g <- g + geom_point(aes(color = groups), alpha = alpha)
+    else g <- g + geom_point(alpha = alpha)
+  }
+  
+  if (!is.null(df.u$groups) && ellipse) {
+    theta <- c(seq(-pi, pi, length = 50), seq(pi, -pi, length = 50))
+    circle <- cbind(cos(theta), sin(theta))
+    ell <- ddply(df.u, "groups", function(x) {
+      if (nrow(x) <= 2) return(NULL)
+      sigma <- var(cbind(x$xvar, x$yvar))
+      mu <- c(mean(x$xvar), mean(x$yvar))
+      ed <- sqrt(qchisq(ellipse.prob, df = 2))
+      data.frame(sweep(circle %*% chol(sigma) * ed, 2, mu, FUN = "+"), groups = x$groups[1])
+      })
+    names(ell)[1:2] <- c("xvar", "yvar")
+    g <- g + geom_path(data = ell, aes(color = groups, group = groups))
+  }
+  
+  if (var.axes) {
+    g <- g + geom_text(
+      data = df.v, 
+      aes(label = varname, x = xvar, y = yvar, angle = angle, hjust = hjust), 
+      color = var.color, 
+      size = varname.size)
+  }
+  return(g)
+}
+```
+
+# Part 1: Differential gene expression
+
+## Get data    
+
+### **Code Modification 1**: Choose a study - (recount2)[https://jhubiostatistics.shinyapps.io/recount/]   
+*2,041 studies to choose from*     
+```{r data_chose}
+### Give SRA/GEO experiment accession number, as appears in left-most column on recount2 website
+myStudy <- "SRP042620" # aka GSE58135
+```
+
+### Download *(only need to do once)*     
+* Downloading from recount database ('http://duffel.rail.bio/recount/')    
+* Data format is a "RangedSummarizedExperiment" (`rse`),  an R object created by `SummarizedExperiment` R package. The rse is used to store experimental data (`exprsData`), gene/probe annotation (`featureData`), sample information (`phenoData`), and experimental results all in one R object.  
+* For more information about `rse`, see the  [vignette for Summarized Experiment R package](http://bioconductor.org/packages/release/bioc/vignettes/SummarizedExperiment/inst/doc/SummarizedExperiment.html)         
+* Expression measures are of genes (not transcripts or exons)   
+* Expression measures are in counts (# copies of the gene)     
+```{r data_download, eval=FALSE}
+download_study(myStudy)
+```
+
+### Load downloaded file
+```{r data_load}
+load(file.path(myStudy, "rse_gene.Rdata"))
+```
+
+## Normalize exprsdata    
+```{r data_normalize}
+### Scale counts
+rse <- scale_counts(rse_gene)
+```
+
+## Explore dataset
+
+### Summary
+```{r rse_explore_summary}
+rse
+```
+
+### featureData ("row" data)  
+At the gene level, the row data includes the gene Gencode ids, the gene symbols and the sum of the reduced exons widths, which can be used for taking into account the gene length.  
+```{r rse_explore_featureData}
+rowData(rse)
+```
+
+### phenoData ("column" data) 
+```{r rse_explore_phenoData}
+colData(rse)
+```
+
+## **Code Modification 2**: Choose the groups you want to test for gene expression differences   
+* This is the column of sample information file (phenoData/myPheno) that has your groups/disease states of interest, to compare.  
+
+### View phenoData table in RStudio  
+Interactively only, not for RMarkdown report  
+```{r phenoData_groups_view, eval=FALSE}
+View(
+  as.data.frame(   # We want to view it as a data.frame table
+    colData(rse)   # The phenoData = colData(rse)
+  ))
+```
+
+### Identify columns in phenoData that have information to compare  
+For the example dataset: **characteristic** column has the group information (tissue type)  
+```{r phenoData_groups_chooseCol}
+phenoData <- as.data.frame(   # We want to view it as a data.frame table
+    colData(rse))
+
+### Summarize characteristics
+summary(factor(unlist(phenoData$characteristics))) # 6 groups
+```
+
+### Define comparison groups  
+There are **many** ways to do this. For this example, we will compare ER+ Breast Cancer Primary Tumor (n = 42) to Triple Negative Breast Cancer Primary Tumor (n = 41).    
+```{r phenoData_groups_define}
+sample_info <- data.frame(
+  ### Column 1 = RUN ID
+  run = phenoData$run, # sample run/experiment data ID in the exprsData
+  
+  ### Column 2 = GROUP
+  group = factor(ifelse(
+    
+    ### Label Triple Negative group
+    phenoData$characteristics == "tissue: Triple Negative Breast Cancer Primary Tumor", "TN", 
+    ifelse(
+      ### Label ER+ group
+      phenoData$characteristics == "tissue: ER+ Breast Cancer Primary Tumor", "ER",
+      ### The rest are "NA" (and we will remove them)
+      NA)))
+)
+```
+
+### Print summary of samples for group chosen
+* Must only have TWO groups in that column  
+* Here we are comparing 2 subtypes of breast cancer:  
+  1. **ER** = tumors that tested positive for estrogen receptor expression  
+  2. **TN** = tumors that rested negative for estrogen receptors (ER-), progesterone receptors (PR-), and HER2 (HER2-)  
+* So here our comparison will be finding genes that are differentially expressed in ER vs TN. One purpose for this analysis is to identify drug targets for each subtype ("personalized/precision" medicine).  
+```{r phenoData_groups_check}
+summary(sample_info)
+```
+
+### Add sample information to rse object
+```{r phenoData_groups_add}
+colData(rse)$group <- sample_info$group
+```
+
+### Remove samples not in chosen groups
+```{r phenoData_groups_removeNA}
+### Save a version with all samples
+rse_full <- rse
+
+### Remove samples not in the "ER" or "TN" groups
+rse <- rse[ , !is.na(rse$group)]
+```
+
+### Check that only the samples in your groups remain
+```{r phenoData_groups_removeNA_check}
+summary(colData(rse)$group)
+```
+
+## Check for outliers   
+
+**Principal component analysis (PCA)** is a statistical method to reduce your gene expression for the thousands of genes (usually ~12,000 for an experiment) to the least number of `principle components` (**PCs**) that "capture" the differences in gene expression across all of the probes for all of the samples, so that you can see big effects in your data and plot these big effects. This is very useful to identify **outlier samples** that, for whatever reason, are completely separate from the other samples, and could have large effects on the gene expression analysis results. Scientists use PCA to identify outlier samples that they may want to remove from their analysis.  
+
+## All samples  
+
+### Run PCA
+Using `prcomp` with centered values. This is generally the preferred method for numerical accuracy.  
+```{r pca_run}
+### Transpose and log-transform the expression data, so that you are comparing samples, not probes/genes and to normalize the data (by log transformation)
+mypca <- prcomp(
+  t(            # Transpose, to look foroutlier samples (not outlier probes)
+    log2(assays(rse_full)$counts + 1)  # Add 1 to expresssion values to prevent log2(0) = -Infinity
+    ), 
+  center = TRUE)
+```
+
+### Print PCA results   
+  * Lists the number of principle components (PC) required to explain the variance of the expression data  
+  * **Standard Deviation** = represents the magnitude of differences between the samples for that PC   
+  * **Proportion of Variance** = the proportion of gene expression changes that a PC represents      
+  * The PCs are numbered in descending % variance they explained; PC1 explains the most variance, followed by PC2, etc. etc.; Multiply by 100 to convert this number into a percent   
+  * **Cumulative Proportion** = the proportion of total variance (gene expression changes) explained by that PC plus all the PCs before it; for example: PC3's "Cumulative Proportion" = PC1's Proportion of Variance + PC2's Proportion of Variance + PC3's Proportion of Variance; Once there are enough PCs to completely explain all the gene expression changes in the data, the Cumulative Proportion = 1.000e+00 (this is equal to 100%) and that is the last PC needed      
+```{r pca_print_summary}
+summary(mypca)
+```
+
+### Plot PCA results  
+* Plot PC1 vs PC2  
+* Samples colored by all characteristics (even those we removed)  
+```{r pca_print_plot_all}
+plot1 <- pcaplot(
+  mypca, 
+  groups = unlist(colData(rse_full)$characteristics))
+print(plot1)
+
+### Save
+ggsave(paste0(myStudy, "_PCA_all.png"))
+```
+
+## For samples in our groups only  
+
+### Run PCA
+```{r pca_run_groups}
+### Transpose and log-transform the expression data, so that you are comparing samples, not probes/genes and to normalize the data (by log transformation)
+mypca <- prcomp(
+  t(            # Transpose, to look foroutlier samples (not outlier probes)
+    log2(assays(rse)$counts + 1)  # Add 1 to expresssion values to prevent log2(0) = -Infinity
+    ), 
+  center = TRUE)
+```
+
+```{r pca_print_plot}
+plot2 <- pcaplot(
+  mypca, 
+  groups = unlist(colData(rse)$group),
+  labels = unlist(colData(rse)$title),# Sample names
+  labels.size = 2 # label size
+  )
+print(plot2)
+
+### Save
+ggsave(paste0(myStudy, "_PCA_groups.png"))
+```
+
+#### View interactively
+```{r pca_plotly}
+library(plotly)
+plotly::ggplotly(plot2)
+```
+
+## Remove outliers (if needed)
+```{r remove_outliers, eval=FALSE}
+### Create list of samples you'de like to remove, using the RUN name
+### Case sensitive!! 
+outliers <- c("SampleRunNameHere", "AnotherSampleRunNameHere")
+
+### Remove samples not in the "ER" or "TN" groups
+rse <- rse[ , !which(rse$run %in% outliers)]
+```
+
+## Gene-level DE Analysis with limma R package
+
+### Convert `rse` to `dge` object  
+```{r limma_load}
+### Convert rse --> dds (DESeq2 object)
+dds <- DESeq2::DESeqDataSet(rse, ~ group) 
+
+### Conver dds --> dge (edgeR object)
+dge <- DEFormats::as.DGEList(dds)
+```
+
+### Model design
+```{r limma_model}
+### phenoData = dge$samples
+model <- model.matrix(~group, dge$samples)
+```
+
+### Normalization  
+* TMM normalization (recommended by limma, in edgeR package)  
+* Voom normalization (part of limma)  
+```{r limma_normalize}
+### TMM normalization (recommended by limma pkg)
+dge <- edgeR::calcNormFactors(dge) # can take a minute
+
+### Voom normalization
+v <- voom(dge$counts, model, plot = TRUE)
+title(sub = myStudy) # title for plot
+```
+
+### Fit model
+```{r limma_fit}
+### Linear model fit
+fit <- lmFit(v, model)
+
+### Get additional empiral Bayesian statistics  
+#?eBayes # for more info
+fit <- eBayes(fit, trend = TRUE, robust = TRUE)
+```
+
+### Run stat test
+```{r limma_stattest}
+results <- data.frame(topTable(fit, number = Inf)) 
+
+### Save (optional)
+#saveRDS(results, file = paste0(myStudy, "_limma.rds"))
+```
+
+### Print top results
+```{r limma_res_top}
+topTable(fit)
+```
+
+### Get gene symbols for all results and export table
+```{r limma_res_all}
+### Get featureData from dge (edegR) object
+featureData <- as.data.frame(dge$genes)
+
+### Check both
+head(featureData)
+head(results)
+
+### Merge with results
+results_anno <- merge(
+  featureData, 
+  results, 
+  by.x = "gene_id",
+  by.y = 0, # row names of results data
+  all = FALSE) # only keep matches
+
+### Check merged
+head(results_anno)
+
+### Export
+write.csv(
+  results_anno, 
+  file = paste0(myStudy, "_limma.csv"),
+  row.names = FALSE, quote = FALSE)
+```
+
+### Plot results
+
+#### Volcano
+```{r plot_volcano}
+volcano <- ggplot(results, aes(logFC, -log10(P.Value))) +
+  ### plot all results
+  geom_point(
+    show.legend = FALSE, 
+    color = "black",
+    alpha = I(0.1)) + # transparency to reduce "overplotting" (overlapping data points)
+  
+  ### plot only significant results (here an adjusted p-value less than 0.05)
+  geom_point(
+    data = results[which(results$adj.P.Val < 0.05), ], 
+    show.legend = FALSE,
+    color = "darkblue", # color differently
+    alpha = I(0.1)) +
+  theme_bw() +  # clean theme (black and white)
+   labs( # pretty axis labels
+     x = expression(paste(log[2], " Fold Change")), 
+     y = expression(paste(-log[10], " p-value")), 
+     title = paste("Volcano plot (limma results of gene counts): ", myStudy))
+print(volcano)
+ggsave(paste0(myStudy, "_volcano.png"))
+```
+
+#### Distribution of p-values
+```{r plot_pvalues}
+phisto <- ggplot(results, aes(x = P.Value)) +
+    geom_histogram(binwidth = 0.01) + # use 1% bins
+    theme_bw() + 
+    labs(
+      x = "p-value", 
+      title = paste("Distribution of p-values (limma; genes):", myStudy)) 
+print(phisto)
+ggsave(paste0(myStudy, "_pvalueHistogram.png"))
+```
+
+# Part 2: Gene fusions
+
+**Purpose: Look for evidence of the major finding of the original publication: Recurrent fusions SCNN1A-TNFRSF1A and CTSD-IFITM10 in breast cancer.**      
+
+## Get data
+
+### Download junctions file from recount  
+*Only do once*  
+```{r fusions_download, eval=FALSE}
+download_study(myStudy, type = "rse-jx")
+```
+
+### Load downloaded data 
+```{r fusions_load}
+load(file.path(myStudy, "rse_jx.Rdata"))
+```
+
+## Summarize  
+
+### By junction type
+```{r fusions_summary_type}
+### Exon-exon junctions by class
+table(rowRanges(rse_jx)$class)
+```
+
+### For fusion types, by chromosome
+```{r fusions_summary_chrom}
+### Potential gene fusions by chromosome
+fusions <- rowRanges(rse_jx)[rowRanges(rse_jx)$class == "fusion"]
+fusions_by_chr <- sort(table(seqnames(fusions)), decreasing = TRUE)
+fusions_by_chr[fusions_by_chr > 0]
+```
+
+### Genes with the most fusions
+```{r fusions_top_genes}
+### Genes with the most fusions
+head(sort(table(unlist(fusions$symbol_proposed)), decreasing = TRUE))
+sort(table(unlist(fusions$symbol_proposed)), decreasing = TRUE)
+```
+
+## Look for evidence of the major finding of the original publication      
+Recurrent fusions SCNN1A-TNFRSF1A and CTSD-IFITM10 in breast cancer  
+
+### Count  
+```{r fusions_confirm_count}
+### Look for gene symbols
+prev_genes <- c("SCNN1A", "TNFRSF1A", "CTSD", "IFITM10")
+
+### Count
+sort(table(unlist(fusions$symbol_proposed[fusions$symbol_proposed %in% prev_genes])))
+```
+
+### Get details
+```{r fusions_confirm_table}
+### Convert Genomic Ranges object to data frame
+fusions_table <- as.data.frame(fusions)
+fusions_prev_genes <- fusions_table[grep(paste(prev_genes, collapse = "|"), fusions_table$symbol_proposed), ]
+
+### Print
+print(fusions_prev_genes)
+
+### Save
+write.csv(
+  fusions_prev_genes, 
+  paste0(myStudy, "_fusions_from_original_publication.csv"), 
+  row.names = FALSE, quote = FALSE)
+```
+
+# Additional documentation
+
+## Bibliography
+
+### Original publication  
+[Varley, et al. Recurrent read-through fusion transcripts in breast cancer. Breast Cancer Res Treat. 2014)[https://www.ncbi.nlm.nih.gov/pubmed/] (It has been (cited 26 times)[https://www.ncbi.nlm.nih.gov/pubmed?linkname=pubmed_pubmed_citedin&from_uid=24929677])  
+
+### Packages
+```{r refs}
+## Citation info for packages used
+citation("recount")
+citation("limma")
+citation("edgeR")
+```
+
+## Methods   
+```{r methods}
+### Date and time that analysis finished
+Sys.time()
+
+### How long the analysis took
+proc.time()
+
+### Packages used (and their versions) for reproducibility
+sessioninfo::session_info()
+```

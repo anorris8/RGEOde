@@ -1,0 +1,603 @@
+---
+title: 'Analyzing Gene Expression Microarray Data from GEO with RGEOde'
+subtitle: 'Example Dataset GSE42568'
+author: 'Student name goes here'
+date: '`r Sys.Date()`'
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    theme: journal
+    df_print: paged
+    code_folding: hide
+---
+
+# Purpose
+
+This RMarkdown will determine the top 10 genes differentially expressed in breast cancer (compared to normal breast tissue) using microarray gene expression data from GEO. Many other possible comparisons are possible. For example, you could determine genes differentially expressed in estrogen positive (ER+) breast cancers compared to ER- breast cancers (see **Study sample information** for information known about the samples in this dataset). Additionally, this data can also be analyzed using NCBI's GEO2R (here)[https://www.ncbi.nlm.nih.gov/geo/geo2r/?acc=GSE42568].
+
+## Example dataset (GSE42568)  
+
+*Abbreviated from (NCBI GEO)[https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE42568]*   
+More information about breast cancer is available (here)[https://www.ncbi.nlm.nih.gov/pubmedhealth/PMH0032825/]
+
+### Study title: Breast Cancer Gene Expression Analysis    
+
+### Study sample information:   
+  * Samples: 104 breast cancer (tumor) biopsies + 17 normal breast tissues    
+  * Patient ages (years): range = 31-89; mean = 58; <50 years old = 20; >50 years old = 77  
+  * Patient sex: all female  
+  * Tumor sizes (cm): range = 0.6-8.0; mean = 2.79  
+  * Tumor stages: T1 (<2cm) = 18; T2 (2–5cm) = 83; T3 (>5cm) = 3  
+  * Tumor grades: Grade 1 = 11; Grade 2 = 40; Grade 3 = 53; NA = 17  
+  * Tumor subtypes: invasive ductal carcinoma = 82; invasive lobular = 17; mucinous = 3; tubular = 2  
+  * Tumor markers: ER+ = 67; ER- = 34; NA = 3  
+  * Tumor metastases present: No = 45; Yes = 59  
+
+## Publication of original analysis  
+[Clarke, et al. Correlating transcriptional networks to breast cancer survival: a large-scale coexpression analysis. Carcinogenesis 2013)[https://www.ncbi.nlm.nih.gov/pubmed/23740839]  
+
+**Abstract:**  
+Weighted gene coexpression network analysis (WGCNA) is a powerful 'guilt-by-association'-based method to extract coexpressed groups of genes from large heterogeneous messenger RNA expression data sets. We have utilized WGCNA to identify 11 coregulated gene clusters across 2342 breast cancer samples from 13 microarray-based gene expression studies. A number of these transcriptional modules were found to be correlated to clinicopathological variables (e.g. tumor grade), survival endpoints for breast cancer as a whole (disease-free survival, distant disease-free survival and overall survival) and also its molecular subtypes (luminal A, luminal B, HER2+ and basal-like). Examples of findings arising from this work include the identification of a cluster of proliferation-related genes that when upregulated correlated to increased tumor grade and were associated with poor survival in general. The prognostic potential of novel genes, for example, ubiquitin-conjugating enzyme E2S (UBE2S) within this group was confirmed in an independent data set. In addition, gene clusters were also associated with survival for breast cancer molecular subtypes including a cluster of genes that was found to correlate with prognosis exclusively for basal-like breast cancer. The upregulation of several single genes within this coexpression cluster, for example, the potassium channel, subfamily K, member 5 (KCNK5) was associated with poor outcome for the basal-like molecular subtype. We have developed an online database to allow user-friendly access to the coexpression patterns and the survival analysis outputs uncovered in this study (available at http://glados.ucd.ie/Coexpression/).  
+
+# Setup
+
+## RMarkdown report options  
+```{r Setup_opts, echo=FALSE}
+library("knitr")
+
+# Do not print R code in report
+opts_chunk$set(echo = FALSE, comment=NA)
+
+# Do not print warnings and messages in report
+opts_chunk$set(warning = FALSE, message = FALSE)
+
+# Keep track of RMarkdown analysis progress
+opts_knit$set(progress = TRUE, verbose = TRUE)
+```
+
+## Install R packages   
+*If they are not already downloaded.*  
+```{r Setup_install, eval=FALSE, warning=FALSE, message=FALSE}
+# R packages at CRAN
+install.packages(c("ggplot2", "knitr", "plyr"))
+install.packages("devtools")
+
+# R packages at Bioconductor
+## try http:// if https:// URLs are not supported
+source("https://bioconductor.org/biocLite.R")
+biocLite(c("GEOquery", "limma", "genefilter"))
+```
+
+## Load R packages   
+*These packages provide us with the functions we will use in our analysis.*   
+```{r Setup_load}
+library("devtools")
+library("genefilter")
+library("ggplot2")
+library("GEOquery")
+library("limma")
+library("plyr")
+```
+
+## Load custom functions 
+```{r Setup_fxns}
+### PCA plotting function (for prcomp) modified from ggbiplot R package
+### Modified 2017-07-31
+pcaplot <- function (pcobj, choices = 1:2, scale = 1, 
+    obs.scale = 1 - scale, var.scale = scale, groups = NULL, 
+    ellipse = TRUE, ellipse.prob = 0.69, labels = NULL, labels.size = 3, 
+    alpha = 1, var.axes = FALSE, circle = FALSE, circle.prob = 0.69, 
+    varname.size = 3, varname.adjust = 1.5, varname.abbrev = FALSE, out.prob = 0.95,
+    out.text = TRUE, out.label = FALSE, out.size = 3, out.names = NULL,
+    ...) 
+{
+  stopifnot(length(choices) == 2)
+  if (inherits(pcobj, "prcomp")) {
+    nobs.factor <- sqrt(nrow(pcobj$x) - 1)
+    d <- pcobj$sdev
+    u <- sweep(
+      pcobj$x, 
+      2, 
+      1/(d * nobs.factor), 
+      FUN = "*")
+    v <- pcobj$rotation
+  }
+  else if (inherits(pcobj, "princomp")) {
+    nobs.factor <- sqrt(pcobj$n.obs)
+    d <- pcobj$sdev
+    u <- sweep(
+      pcobj$scores, 
+      2, 
+      1/(d * nobs.factor), 
+      FUN = "*")
+    v <- pcobj$loadings
+  }
+  else if (inherits(pcobj, "PCA")) {
+    nobs.factor <- sqrt(nrow(pcobj$call$X))
+    d <- unlist(sqrt(pcobj$eig)[1])
+    u <- sweep(
+      pcobj$ind$coord, 
+      2, 
+      1/(d * nobs.factor), 
+      FUN = "*")
+    v <- sweep(
+      pcobj$var$coord, 
+      2, 
+      sqrt(pcobj$eig[1:ncol(pcobj$var$coord), 1]), 
+      FUN = "/")
+  }
+  else if (inherits(pcobj, "lda")) {
+    nobs.factor <- sqrt(pcobj$N)
+    d <- pcobj$svd
+    u <- predict(pcobj)$x/nobs.factor
+    v <- pcobj$scaling
+    d.total <- sum(d^2)
+  }
+  else {
+    stop("Expected a object of class prcomp, princomp, PCA, or lda")
+  }
+  #choices <- pmin(choices, ncol(u))
+  df.u <- as.data.frame(
+    sweep(
+      u[, choices], 
+      2, 
+      d[choices]^obs.scale, 
+      FUN = "*"))
+  v <- sweep(
+    v, 
+    2, 
+    d^var.scale, 
+    FUN = "*")
+  df.v <- as.data.frame(v[, choices])
+  names(df.u) <- c("xvar", "yvar")
+  names(df.v) <- names(df.u)
+  df.u <- df.u * nobs.factor
+  r <- sqrt(qchisq(circle.prob, df = 2)) * prod(colMeans(df.u^2))^(1/4)
+  v.scale <- rowSums(v^2)
+  df.v <- r * df.v/sqrt(max(v.scale))
+  if (obs.scale == 0) {
+    u.axis.labs <- paste("PC", choices, sep = "")
+  }
+  else {
+    u.axis.labs <- paste("PC", choices, sep = "")
+  }
+  u.axis.labs <- paste(
+    u.axis.labs, 
+    sprintf(
+      "(%0.1f%%)", 
+      100 * pcobj$sdev[choices]^2/sum(pcobj$sdev^2)))
+  if (!is.null(labels)) {
+    df.u$labels <- labels
+  }
+  if (!is.null(groups)) {
+    df.u$Group <- groups
+  }
+  if (varname.abbrev) {
+    df.v$varname <- abbreviate(rownames(v))
+  }
+  else {
+    df.v$varname <- rownames(v)
+  }
+  df.v$angle <- with(df.v, (180/pi) * atan(yvar/xvar))
+  df.v$hjust = with(df.v, (1 - varname.adjust * sign(xvar))/2)
+  g <- ggplot(
+    data = df.u, 
+    aes(x = xvar, y = yvar)) + 
+    xlab(u.axis.labs[1]) + 
+    ylab(u.axis.labs[2]) + 
+    coord_equal()
+  if (var.axes) {
+    if (circle) {
+      theta <- c(
+        seq(-pi, pi, length = 50), 
+        seq(pi, -pi, length = 50))
+      circle <- data.frame(
+        xvar = r * cos(theta), 
+        yvar = r * sin(theta))
+      g <- g + 
+        geom_path(
+          data = circle, 
+          color = muted("white"), 
+          size = 1/2, 
+          alpha = 1/3,
+          show.legend = FALSE)
+      }
+    g <- g + 
+      geom_segment(
+        data = df.v, 
+        aes(x = 0, y = 0, xend = xvar, yend = yvar), 
+        arrow = arrow(length = unit(1/2, "picas")), 
+        color = muted("black"),
+        show.legend = FALSE)
+    }
+    if (!is.null(df.u$labels)) {
+      if (!is.null(df.u$Group)) {
+        g <- g + 
+          geom_text(
+            aes(label = labels, color = Group), 
+            size = labels.size,
+            show.legend = FALSE)
+      }
+      else {
+        g <- g + 
+          geom_text(
+            aes(label = labels), 
+            size = labels.size,
+            show.legend = FALSE)
+      }
+    }
+  else {
+    if (!is.null(df.u$Group)) {
+      g <- g + 
+        geom_point(
+          aes(color = Group), 
+          alpha = alpha, 
+          show.legend = FALSE)
+    }
+    else {
+      g <- g + 
+        geom_point(
+          alpha = alpha,
+          show.legend = FALSE)
+    }
+  }
+  if (!is.null(df.u$Group) && ellipse) {
+    theta <- c(
+      seq(-pi, pi, length = 50), 
+      seq(pi, -pi, length = 50))
+    circle <- cbind(
+      cos(theta), 
+      sin(theta))
+    ellipse <- ddply(df.u, "Group", function (x) {
+      if (nrow(x) <= 2) {
+        return(NULL)
+      }
+      sigma <- var(cbind(
+        x$xvar, 
+        x$yvar))
+      mu <- c(
+        mean(x$xvar), 
+        mean(x$yvar))
+      ed <- sqrt(qchisq(ellipse.prob, df = 2))
+      data.frame(
+        sweep(
+          circle %*% chol(sigma) * ed, 
+          2, 
+          mu, 
+          FUN = "+"), 
+        Group = x$Group[1])
+      })
+    names(ellipse)[1:2] <- c("xvar", "yvar")
+    g <- g + 
+      geom_path(
+        data = ellipse, 
+        aes(color = Group, group = Group),
+        show.legend = FALSE)
+    ellipse.out <- ddply(df.u, "Group", function(x) {
+      if (nrow(x) <= 2) {
+        return(NULL)
+      }
+      sigma <- var(cbind(
+        x$xvar, 
+        x$yvar))
+      mu <- c(
+        mean(x$xvar), 
+        mean(x$yvar))
+      ed <- sqrt(qchisq(out.prob, df = 2))
+      data.frame(
+        sweep(
+          circle %*% chol(sigma) * ed, 
+          2, 
+          mu, 
+          FUN = "+"), 
+        Group = x$Group[1])
+      })
+    names(ellipse.out)[1:2] <- c("xvar", "yvar")
+    edge <- ddply(ellipse.out, "Group", function (x) {
+      data.frame(
+        Group = x$Group[1], 
+        xmin = min(x$xvar), 
+        xmax = max(x$xvar), 
+        ymin = min(x$yvar), 
+        ymax = max(x$yvar))
+      })
+    if (!is.null(out.names)) {
+      df.u$names <- out.names
+    }
+    else {
+      df.u$names <- rownames(df.u)
+    }
+    outs <- list()
+    for (i in 1:length(levels(df.u$Group))) {
+      grp = df.u[df.u$Group == levels(df.u$Group)[i], ]
+      outs = append(
+        outs, 
+        c(
+          rownames(grp[grp$xvar < edge$xmin[i] | grp$xvar > edge$xmax[i], ]), 
+          rownames(grp[grp$yvar < edge$ymin[i] | grp$yvar > edge$ymax[i], ])))
+    }
+    df.out <- df.u[unique(unlist(outs)), ]
+    if (out.text) {
+      g <- g + 
+        geom_text(
+          data = df.out, 
+          aes(label = names, color = Group), 
+          size = out.size, 
+          position = "jitter",
+          show.legend = FALSE, 
+          fontface = "bold", 
+          hjust = "inward", 
+          vjust = "inward")
+    }
+    if (out.label) {
+      g <- g + 
+        geom_label(
+          data = df.out, 
+          aes(
+            label = names, 
+            color = Group), 
+          size = out.size, 
+          show.legend = FALSE)
+    }
+  }
+  if (var.axes) {
+    g <- g + 
+      geom_text(
+        data = df.v, 
+        aes(
+          label = varname, 
+          x = xvar, 
+          y = yvar, 
+          angle = angle, 
+          hjust = hjust), 
+        color = "black", 
+        size = varname.size,
+        show.legend = FALSE)
+  }
+  g <- g + 
+    theme_bw() + 
+    theme(
+      axis.title = element_text(face = "bold"), 
+      plot.title = element_text(face = "bold", hjust = 0.5))
+  return(g)
+}
+
+### Cleanup phenoData for GEO data
+phenoCleanUp <- function(data = myData) {
+  phenoData <- attr(phenoData(data), "data")
+  
+  ### Rename phenoData's group columns (they are called "characteristics")
+  colnames(phenoData)[grep("characteristics", colnames(phenoData))] <- unlist(
+    lapply(
+      phenoData[1, grep("characteristics", colnames(phenoData))], 
+      function (x) {
+        gsub(": .*", "", x)
+        }
+      )
+    )
+  
+  ### Remove the characteristic info (which is now the colname) from each cell
+  phenoData[ , -1] <- gsub(".*: ", "", as.matrix(phenoData[ , -1]))
+  
+  ### Add fixed phenoData to experiment data
+  attr(phenoData(data), "data") <- phenoData
+  return(data)
+}
+```
+
+# Choose a human gene expression experiment from NCBI GEO      
+*From the list of >3,500 studies that use the GPL570 (HG-U133_Plus_2) microarray platform*  
+```{r ChoseExperiment}
+### Give GEO experiment accession number
+myStudy <- "GSE42568"
+```
+
+# Download and process experiment data from NCBI GEO  
+```{r Download, warning=FALSE, message=FALSE}
+### If data is not already downloaded, download it from NCBI GEO website using the getGEO function in GEOquery package (requires internet and permission to download files from the internet)  
+### In the case of no internet and/or insufficient downloading permissions, have file already downloaded on computer/USB
+if (file.exists(paste0(myStudy, "_filtered.rds"))) {
+  "Loading processed data..."
+  myData <- readRDS(file = paste0(myStudy, "_filtered.rds"))
+  
+} else {
+  ### Download data
+  if (file.exists("GSE42568_series_matrix.txt.gz")) {
+    print("Loading raw data from computer...")
+    myData <- GEOquery::getGEO("GSE42568_series_matrix.txt.gz", GSEMatrix = TRUE, AnnotGPL = TRUE)
+    } else {
+      print("Downloading data from NCBI GEO website FTP...")
+      ### Have it re-attempt download if it fails
+      myData <- withRestarts(invokeRestart("download", study = myStudy), download = function(study) {
+        getGEO(GEO = study, destdir = ".", GSEMatrix = TRUE, AnnotGPL = TRUE)
+        })
+    } 
+
+  ### Pre-process downloaded data
+  ### Add probe information for GPL570 microarray
+  if (length(myData) > 1) idx <- grep("GPL570", attr(myData, "names")) else idx <- 1
+  myData <- myData[[idx]]
+  
+  ### Cleanup phenoData with phenoCleanUp custom function
+  myData <- phenoCleanUp(data = myData)
+  
+  ### Quantile normalization (used in GEO2R)
+  exprsData <- exprs(myData)
+  qx <- as.numeric(quantile(exprsData, c(0., 0.25, 0.5, 0.75, 0.99, 1.0), na.rm = TRUE))
+  LogC <- (qx[5] > 100) ||
+            (qx[6]-qx[1] > 50 && qx[2] > 0) ||
+            (qx[2] > 0 && qx[2] < 1 && qx[4] > 1 && qx[4] < 2)
+
+  ### Make zero values "NA" (empty)
+  exprsData[which(exprsData <= 0)] <- NaN
+
+  ### Log2-transform data
+  exprs(myData) <- log2(exprsData) 
+  
+  ### Filter probes with low variance  
+  ### Remove "low-variance" probes from data, since the probe won't be differentially expressed if it has similar value for all samples.  
+
+  ### Tabulate/count probes that have same value ("zero variance") for all samples
+  #table(apply(exprs(myData), 1, var) == 0) 
+
+  ### Filter/remove "low-variance" probes from data (since the probe/gene won't be differentially expressed if it has similar value for all samples)
+  myData <- genefilter::varFilter(myData, var.cutoff = 0.5)
+
+  ### Save
+  saveRDS(myData, file = paste0(myStudy, "_filtered.rds"))
+}
+
+### FTP
+#myData <- getGEO("GSE42568", destdir = ".", GSEMatrix = TRUE, AnnotGPL = TRUE)
+
+### Local
+#myData <- GEOquery::getGEO("GSE42568_series_matrix.txt.gz", GSEMatrix = TRUE, AnnotGPL = TRUE)
+```
+
+# Choose the groups you want to test for gene expression differences  
+
+*This is the column of sample information file (phenoData/myPheno) that has your groups/disease states of interest, to compare.*
+
+** Must only have TWO different groups in that column (e.g. "normal" and "cancer") **
+
+## See what groups are available for the dataset     
+```{r PickGroups_printFull, cols.print=5, rows.print=5}
+### View interactively, in RStudio
+#View(attr(phenoData(myData), "data"))
+
+### Print, for RMarkdown report
+attr(phenoData(myData), "data")
+```
+
+## Choose a column to use for comparison
+```{r PickGroups_pick}
+### Get the column numbers, to find the number corresponding to the characteristics (group) you want to test
+colnames(attr(phenoData(myData), "data"))
+
+# Tell the computer which characteristic column to use for the gene expression comparison (here it's column 10 - "tissue", which indicates if the sample is tumor or normal) 
+myGroups <- 10
+```
+
+## Summarize chosen comparison (here tumor vs normal)  
+```{r PickGroups_printGroupSummary}
+### Print summary of samples by their group (chosen above; here it's column #10)
+attr(phenoData(myData), "data")[ , myGroups] <- as.factor(attr(phenoData(myData), "data")[ , myGroups])
+summary(attr(phenoData(myData), "data")[ , myGroups])
+```
+
+# Check for outliers  
+
+**Principal component analysis (PCA)** is a statistical method to reduce your gene expression for the 54,000 microarray probes to the least number of `principle components` (**PCs**) that "capture" the differences in gene expression across all of the probes for all of the samples, so that you can see big effects in your data and plot these big effects. This is very useful to identify **outlier samples** that, for whatever reason, are completely separate from the other samples, and could have large effects on the gene expression analysis results. Scientists use PCA to identify outlier samples that they may want to remove from their analysis.  
+
+## Run PCA on samples  
+Using `prcomp` and centered, scaled values. This is generally the preferred method for numerical accuracy.   
+```{r PCA_Run}
+# Transpose and log-transform the expression data, so that you are comparing samples, not probes/genes and to normalize the data (by log transformation)
+mypca <- prcomp(t(exprs(myData)), center = TRUE, scale. = TRUE)
+```
+
+## Print the PCA results   
+  * Lists the number of principle components (PC) required to explain the variance of the expression data  
+  * **Standard Deviation** = represents the magnitude of differences between the samples for that PC  
+  * **Proportion of Variance** = the proportion of gene expression changes that a PC represents     
+  * The PCs are numbered in descending % variance they explained; PC1 explains the most variance, followed by PC2, etc. etc.; Multiply by 100 to convert this number into a percent   
+  * **Cumulative Proportion** = the proportion of total variance (gene expression changes) explained by that PC plus all the PCs before it; for example: PC3's "Cumulative Proportion" = PC1's Proportion of Variance + PC2's Proportion of Variance + PC3's Proportion of Variance; Once there are enough PCs to completely explain all the gene expression changes in the data, the Cumulative Proportion = 1.000e+00 (this is equal to 100%) and that is the last PC needed     
+```{r PCA_Results_Print}
+summary(mypca)
+```
+
+## Plot the PCA results, for the first two PCs    
+*Plot PC1 vs PC2, coloring the samples by the group they are in the characteristics column you chose*  
+```{r PCA_Results_Plot}
+pcaplot(mypca) +
+  ggtitle(paste("PCA:", myStudy))     # add plot title
+```
+
+# Determine top 10 dysregulated genes (Experimental vs Control group)
+
+## Setup test design (groups to be compared)    
+*Group A vs Group B from the column in myPheno designated by myGroups*  
+```{r Test_Design}
+### Test design to compare breast cancer vs normal
+myDesign <- model.matrix(~0 + factor(attr(phenoData(myData), "data")[ , myGroups]))
+
+### Get names of the groups that you are comparing
+myComparison <- gsub('^factor.*\\)', '', colnames(myDesign))
+
+### Simply names for test design
+names(myComparison) <- c("A", "B") 
+myComparison # Here "A" = breast cancer and "B" = normal breast (since it's alphabetical)
+colnames(myDesign) <- c("A", "B")
+```
+
+## Run statistical test for differentially expressed probes    
+Uses functions in the `limma` R package; the functions run use a statistical test called a **linear model** to determine what probes are differentially expressed (**dyregulated**). The probes represent genes, and at the end of this analysis, we will convert the probe IDs to gene symbols.    
+```{r Test_Run}
+myTest <- lmFit(myData, myDesign)
+contrast.matrix <- makeContrasts(A-B, levels = myDesign) # Want to compare cancer vs normal
+myTest <- contrasts.fit(myTest, contrast.matrix)
+myTest <- eBayes(myTest)
+```
+
+## Get results probes/genes that are differential expressed in Group A versus Group B  
+  * Sorted by significance (most significant = smallest p-value)    
+  * logFC = log2-transformed fold change  
+  * adj p value = p-value adjusted for the multiple tests done, since each probe was a separate statistical test (54,000 probes = 54,000 statistical tests were run, so if p = 0.05 is your cutoff for statistical significance, then 54,000*0.05 = 2,700 probes will be dysregulated by error)    
+*Note that some probes do not have genes that they map to (probes were designed based on old (~2001) knowledge of the human genome), and some genes have multiple probes.*   
+```{r Results, cols.print=5, rows.print=5}
+### Extract and save the results
+res_full <- data.frame(topTable(myTest, n = Inf))
+write.csv(res_full, file = paste0(myStudy, "_fullresults.csv"))
+
+### Print results
+data.frame(topTable(myTest, n = Inf))[ , c(3,2,14,22,25,26)] # Remove extra columns
+```
+
+# Plotting (not done)
+```{r PlotGenes, eval=FALSE}
+### From GEO2R
+################################################################
+#   Boxplot for selected GEO samples
+library(Biobase)
+library(GEOquery)
+
+# load series and platform data from GEO
+
+gset <- getGEO("GSE42568", GSEMatrix =TRUE, getGPL=FALSE)
+if (length(gset) > 1) idx <- grep("GPL570", attr(gset, "names")) else idx <- 1
+gset <- gset[[idx]]
+
+# group names for all samples in a series
+gsms <- paste0("00000000000000000111111111111111111111111111111111",
+        "11111111111111111111111111111111111111111111111111",
+        "111111111111111111111")
+sml <- c()
+for (i in 1:nchar(gsms)) { sml[i] <- substr(gsms,i,i) }
+sml <- paste("G", sml, sep="")  set group names
+
+# order samples by group
+ex <- exprs(gset)[ , order(sml)]
+sml <- sml[order(sml)]
+fl <- as.factor(sml)
+labels <- c("normal","tumor")
+
+# set parameters and draw the plot
+palette(c("#dfeaf4","#f4dfdf", "#AABBCC"))
+dev.new(width=4+dim(gset)[[2]]/5, height=6)
+par(mar=c(2+round(max(nchar(sampleNames(gset)))/2),4,2,1))
+title <- paste ("GSE42568", '/', annotation(gset), " selected samples", sep ='')
+boxplot(ex, boxwex=0.6, notch=T, main=title, outline=FALSE, las=2, col=fl)
+legend("topleft", labels, fill=palette(), bty="n")
+```
+# Print session information  
+```{r sessionInfo}
+### Date and time that analysis finished
+Sys.time()
+
+### How long the analysis took
+proc.time()
+
+### Packages used (and their versions) for reproducibility
+sessioninfo::session_info()
+```
